@@ -1,0 +1,43 @@
+# shap_inference.py
+
+import torch
+import shap
+import numpy as np
+from hybrid_anomaly_detection import HybridModel
+
+
+def explain_with_shap(model, background_data, input_data, input_size):
+    """
+    Generate SHAP values for anomaly interpretation.
+
+    Parameters:
+    - model: trained HybridModel
+    - background_data: tensor [B, T, F] for SHAP baseline
+    - input_data: tensor [1, T, F] to explain
+    - input_size: number of features
+    """
+    model.eval()
+    wrapped_model = lambda x: model(x)[0].detach().cpu().numpy()
+
+    # Flatten background and input for SHAP DeepExplainer
+    background_data = background_data.requires_grad_(True)
+    input_data = input_data.requires_grad_(True)
+
+    # Use DeepExplainer
+    explainer = shap.DeepExplainer(model, background_data)
+    shap_values = explainer.shap_values(input_data)
+
+    return shap_values
+
+
+# Example usage (replace with actual model and data):
+if __name__ == "__main__":
+    model = HybridModel(input_size=10, cnn_out_channels=32, kernel_size=3,
+                        lstm_hidden_size=64, lstm_layers=1, ae_hidden_size=32)
+    model.load_state_dict(torch.load("models/best_model.pth"))
+
+    background = torch.randn(100, 20, 10)  # 100 windows, 20 timesteps, 10 features
+    test_input = torch.randn(1, 20, 10)
+
+    shap_values = explain_with_shap(model, background, test_input, input_size=10)
+    shap.summary_plot(shap_values[0], test_input.numpy()[0])
