@@ -1,0 +1,140 @@
+# hybrid_anomaly_detection.py
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import numpy as np
+from sklearn.preprocessing import MinMaxScaler
+from torch.utils.data import Dataset, DataLoader
+import time
+
+
+class TimeSeriesDataset(Dataset):
+    def __init__(self, data, window_size):
+        self.data = data
+        self.window_size = window_size
+
+    def __len__(self):
+        return len(self.data) - self.window_size
+
+    def __getitem__(self, idx):
+        return self.data[idx:idx+self.window_size]
+
+
+def preprocess_data(raw_data, normalize=True):
+    if normalize:
+        scaler = MinMaxScaler()
+        data = scaler.fit_transform(raw_data)
+    else:
+        data = raw_data
+    return torch.tensor(data, dtype=torch.float32), scaler if normalize else None
+
+
+class CNNLSTMEncoder(nn.Module):
+    def __init__(self, input_size, cnn_out_channels, kernel_size, lstm_hidden_size, lstm_layers):
+        super(CNNLLSTMEncoder, self).__init__()
+        self.cnn = nn.Conv1d(in_channels=input_size, out_channels=cnn_out_channels,
+                             kernel_size=kernel_size, padding=kernel_size // 2)
+        self.lstm = nn.LSTM(input_size=cnn_out_channels, hidden_size=lstm_hidden_size,
+                            num_layers=lstm_layers, batch_first=True, dropout=0.3)
+
+    def forward(self, x):
+        x = x.permute(0, 2, 1)
+        x = F.relu(self.cnn(x))
+        x = x.permute(0, 2, 1)
+        x, _ = self.lstm(x)
+        return x
+
+
+class AttentionAutoencoder(nn.Module):
+    def __init__(self, input_size, hidden_size):
+        super(AttentionAutoencoder, self).__init__()
+        self.encoder = nn.Linear(input_size, hidden_size)
+        self.decoder = nn.Linear(hidden_size, input_size)
+
+    def attention(self, encoder_output):
+        energy = torch.tanh(encoder_output)
+        attention_weights = F.softmax(energy, dim=1)
+        context_vector = attention_weights * encoder_output
+        return context_vector.sum(dim=1), attention_weights
+
+    def forward(self, x):
+        batch_size, seq_len, feature_dim = x.shape
+        x_flat = x.view(batch_size * seq_len, feature_dim)
+        encoded = F.relu(self.encoder(x_flat)).view(batch_size, seq_len, -1)
+        context, attn_weights = self.attention(encoded)
+        decoded = self.decoder(context)
+        return decoded, attn_weights
+
+
+class HybridModel(nn.Module):
+    def __init__(self, input_size, cnn_out_channels, kernel_size, lstm_hidden_size,
+                 lstm_layers, ae_hidden_size):
+        super(HybridModel, self).__init__()
+        self.encoder = CNNLSTMEncoder(input_size, cnn_out_channels, kernel_size,
+                                      lstm_hidden_size, lstm_layers)
+        self.autoencoder = AttentionAutoencoder(lstm_hidden_size, ae_hidden_size)
+
+    def forward(self, x):
+        encoded_seq = self.encoder(x)
+        decoded, attn_weights = self.autoencoder(encoded_seq)
+        return decoded, attn_weights, encoded_seq
+
+
+def reconstruction_loss(original, reconstructed):
+    return F.mse_loss(original, reconstructed, reduction='mean')
+
+
+def entropy_regularization(attn_weights):
+    epsilon = 1e-8
+    entropy = -torch.sum(attn_weights * torch.log(attn_weights + epsilon), dim=1).mean()
+    return entropy
+
+
+def train_model(model, dataloader, optimizer, num_epochs=100, lambda_entropy=0.1):
+    model.train()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device)
+    for epoch in range(num_epochs):
+        epoch_loss = 0
+        start_time = time.time()
+        for batch in dataloader:
+            batch = batch.to(device)
+            optimizer.zero_grad()
+            decoded, attn_weights, _ = model(batch)
+            loss_recon = reconstruction_loss(batch[:, -1, :], decoded)
+            loss_entropy = entropy_regularization(attn_weights)
+            loss = loss_recon + lambda_entropy * loss_entropy
+            loss.backward()
+            optimizer.step()
+            epoch_loss += loss.item()
+        print(f"Epoch {epoch+1}/{num_epochs} - Loss: {epoch_loss/len(dataloader):.6f} - Time: {time.time() - start_time:.2f}s")
+
+
+def evaluate_model(model, dataloader):
+    model.eval()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device)
+    total_loss = 0
+    with torch.no_grad():
+        for batch in dataloader:
+            batch = batch.to(device)
+            decoded, attn_weights, _ = model(batch)
+            loss = reconstruction_loss(batch[:, -1, :], decoded)
+            total_loss += loss.item()
+    avg_loss = total_loss / len(dataloader)
+    print(f"Evaluation Loss: {avg_loss:.6f}")
+    return avg_loss
+
+
+def save_model(model, path):
+    torch.save(model.state_dict(), path)
+
+
+def load_model(model, path):
+    model.load_state_dict(torch.load(path))
+    model.eval()
+    return model
+
+
+# SHAP will be integrated separately in inference or visualization scripts using shap.DeepExplainer
