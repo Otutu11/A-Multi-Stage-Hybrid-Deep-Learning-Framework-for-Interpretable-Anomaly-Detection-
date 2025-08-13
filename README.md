@@ -108,10 +108,10 @@ This project is licensed under the MIT License.
 
 For questions, feedback, or dataset access, please reach out to:
 
-    Ugochukwu Charles Akajiaku
+   Otutu Anslem
 
     Email: [Insert Email]
 
-    GitHub: https://github.com/Akajiaku1
+    GitHub: https://github.com/Otutu11
 
     LinkedIn: https://www.linkedin.com/in/akajiaku
